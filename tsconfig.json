@@ -4,8 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": [
-      "ES2021",
-      "DOM"
+      "ES2022"
     ],
     "strict": true,
     "skipLibCheck": true,

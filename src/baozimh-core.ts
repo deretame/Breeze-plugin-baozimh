@@ -195,7 +195,7 @@ function makeImage(
     id,
     url,
     name,
-    path,
+    path: path.split("/").at(-1) || path,
     extern: {},
   };
 }
@@ -348,18 +348,18 @@ async function getChapterList(mangaPath: string): Promise<ChapterSummary[]> {
   const chapters: ChapterSummary[] = dedup.map((item, index) => ({
     id: item.chapterPath,
     requestId: item.chapterPath,
-    logicalKey: item.chapterPath,
+    logicalKey: String(total - index),
     storageChapterId: item.chapterPath,
     name: item.name,
     order: total - index,
     extern: {},
   }));
+
   if (chapters.length > 0) {
     chapters[0].storageChapterId += LAST_CHAPTER_MARK;
     chapters[0].requestId += LAST_CHAPTER_MARK;
     chapters[0].logicalKey += LAST_CHAPTER_MARK;
   }
-  console.debug(chapters);
   return chapters.reverse();
 }
 
@@ -529,7 +529,7 @@ function createComicListItem(
       id,
       url: coverUrl,
       name: "cover",
-      path: coverUrl || "",
+      path: coverUrl.split("/").at(-1) || coverUrl,
       extern: {},
     },
     metadata: [],
@@ -679,11 +679,11 @@ export async function getChapter(
     chapters.find(
       (item) => item.requestId === chapterId || item.id === chapterId,
     ) ?? chapters[0];
-  const pages = await getPages(chapter.storageChapterId);
+  const pages = await getPages(chapter.requestId);
   const pageItems: ChapterPage[] = pages.map((url, idx) => ({
     id: `${idx + 1}`,
     name: `${idx + 1}`,
-    path: url,
+    path: url.split("/").at(-1) || `${idx + 1}`,
     url,
     extern: {},
   }));
@@ -721,11 +721,11 @@ export async function getReadSnapshot(
     chapters.find(
       (item) => item.requestId === chapterId || item.id === chapterId,
     ) ?? chapters[0];
-  const pages = await getPages(currentChapter.storageChapterId);
+  const pages = await getPages(currentChapter.requestId);
   const pageItems: ChapterPage[] = pages.map((url, idx) => ({
     id: `${idx + 1}`,
     name: `${idx + 1}`,
-    path: url,
+    path: url.split("/").at(-1) || `${idx + 1}`,
     url,
     extern: {},
   }));
