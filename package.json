@@ -13,14 +13,11 @@
     "dev:serve": "tsx dev-server.ts"
   },
   "devDependencies": {
-    "@rspack/cli": "^2.0.5",
-    "@rspack/core": "^2.0.5",
-    "@types/node": "^25.9.1",
+    "@rspack/cli": "^2.0.8",
+    "@rspack/core": "^2.0.8",
+    "@types/node": "^26.0.0",
     "cross-env": "^10.1.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
-  },
-  "dependencies": {
-    "cheerio": "^1.2.0"
   }
 }

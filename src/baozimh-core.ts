@@ -1,5 +1,4 @@
-import type { CheerioAPI } from "cheerio";
-import * as cheerio from "cheerio";
+import { CheerioAPI } from "../types/breeze-html";
 import type {
   ChapterContentContract,
   ChapterPage,
@@ -201,7 +200,7 @@ function makeImage(
 }
 
 function parseSearchHtml(html: string): SearchHit[] {
-  const $ = cheerio.load(html);
+  const $ = BreezeHtml.load(html);
   const rows: SearchHit[] = [];
   $("a.comics-card__poster, div.classify-items a").each((_, el) => {
     const href = readString($(el).attr("href"));
@@ -289,7 +288,7 @@ function getPageStatus($: CheerioAPI): MangaDetail["status"] {
 
 async function getMangaDetail(mangaPath: string): Promise<MangaDetail> {
   const html = await fetchText(detailLink(mangaPath));
-  const $ = cheerio.load(html);
+  const $ = BreezeHtml.load(html);
   const thumbnail =
     readString($("div.pure-g div > amp-img").first().attr("src")) ||
     getMetaContent($, 'meta[property="og:image"]');
@@ -313,7 +312,7 @@ async function getMangaDetail(mangaPath: string): Promise<MangaDetail> {
 
 async function getChapterList(mangaPath: string): Promise<ChapterSummary[]> {
   const html = await fetchText(detailLink(mangaPath));
-  const $ = cheerio.load(html);
+  const $ = BreezeHtml.load(html);
   const list: ChapterListEntry[] = [];
   $(".comics-chapters a[href]").each((_, el) => {
     const name = readString($(el).text());
@@ -409,10 +408,10 @@ function parsePageImageUrls(
   html: string,
   isLast: boolean,
 ): { urls: string[]; nextHref: string | null } {
-  const $ = cheerio.load(html);
+  const $ = BreezeHtml.load(html);
   const urls: string[] = [];
   if (!isLast) {
-    $("amp-state[id^=chapter][id$=Src] > script[type=application/json]").each(
+    $('amp-state[id^=chapter][id$=Src] > script[type="application/json"]').each(
       (_, el) => {
         const data = readString($(el).text());
         if (!data) return;

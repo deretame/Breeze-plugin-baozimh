@@ -1,5 +1,7 @@
 export {};
 
+/// <reference path="./breeze-html.d.ts" />
+
 export type NativeChainStep = string | { op: string; extraInputId?: number };
 
 export interface FsApi {
