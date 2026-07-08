@@ -1,4 +1,3 @@
-import { CheerioAPI } from "../types/breeze-html";
 import type {
   ChapterContentContract,
   ChapterPage,
@@ -12,7 +11,8 @@ import type {
   SearchComicPayload,
   SearchResultContract,
   StringMap,
-} from "../types/type";
+} from "breeze-plugin-kit";
+import { CheerioAPI } from "breeze-plugin-kit";
 import { PLUGIN_ID } from "./common";
 
 const DEFAULT_DOMAIN = process.env.BAOZIMH_DOMAIN || "https://www.baozimh.com";
