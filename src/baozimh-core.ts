@@ -1,9 +1,12 @@
 import type {
+  ActionItem,
   ChapterContentContract,
   ChapterPage,
   ChapterPayload,
   ChapterSummary,
   ComicDetailContract,
+  ComicInfoPageAction,
+  ComicListItem,
   FetchImageBytesPayload,
   FetchImageBytesResult,
   ReadSnapshotContract,
@@ -14,67 +17,70 @@ import type {
 } from "breeze-plugin-kit";
 import { CheerioAPI } from "breeze-plugin-kit";
 import { PLUGIN_ID } from "./common";
+import { decodeChapterImages } from "./decoder";
 
-const DEFAULT_DOMAIN = process.env.BAOZIMH_DOMAIN || "https://www.baozimh.com";
-const USER_AGENT = "baozimh_android/1.0.31/gb/adset";
-const APP_VERSION = "1.0.31";
-const APP_ID = "cn.sts.xiaoyun.ordermeals";
-const DEVICE_ID = "BE2A.250530.026.F3";
-const DEVICE_CODE = "2c712c6ba4e95a9f4157f94e1794a86c";
-const BYPASS_HOSTS = [
-  "appgb-vdkr.baozimh.com",
-  "appgb1-vdkr.baozimh.com",
-  "appgb2-vdkr.baozimh.com",
-  "app1-vdkr.baozimh.com",
-  "app2-vdkr.baozimh.com",
-];
-const LAST_CHAPTER_MARK = "/last_chapter";
+// 旧站 www.baozimh.com 已全站 Gatekeeper 拦截（search/detail/API 均 403 challenge_required），
+// 切到新站 baozimh.org（Cloudflare 后 Astro 站点），章节数据走 v2.apikk.top JSON API。
+const SITE = process.env.BAOZIMH_DOMAIN || "https://baozimh.org";
+const API_HOST = process.env.BAOZIMH_API || "https://v2.apikk.top";
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+// 图片线路：站内 getChapter bundle 的 route 表，默认 c 线；line === 2 切 nd2 主机。
+const IMAGE_HOST_DEFAULT = "https://c-nd3-1.6wm.top";
+const IMAGE_HOST_LINE2 = "https://c-nd2-1.6wm.top";
+const SEARCH_PAGE_SIZE = 30;
 
 type SearchHit = {
-  mangaPath: string;
+  slug: string;
   title: string;
   cover: string | null;
 };
 
-type ApiComicItem = {
-  comic_id?: string;
-  name?: string;
-  author?: string;
-  type_names?: string[];
-  region?: string;
-  topic_img?: string;
-};
+type MangaStatus = "ongoing" | "completed" | "unknown";
 
-type ApiComicListResponse = {
-  items?: ApiComicItem[];
-};
-
-type MangaDetail = {
-  mangaPath: string;
+type DetailMeta = {
+  mid: string;
+  slug: string;
   title: string;
-  thumbnail: string | null;
+  cover: string | null;
   author: string | null;
   tags: string[];
   description: string | null;
-  status: "ongoing" | "completed" | "unknown";
+  status: MangaStatus;
+  statusBadge: string;
 };
 
-type ChapterRequest = {
-  url: string;
-  headers: Record<string, string>;
-  isLast: boolean;
+type MangaApiChapter = {
+  id: string;
+  title: string;
+  slug: string;
+  order: number;
+  updatedAt: string;
 };
 
-type ChapterListEntry = {
-  name: string;
-  chapterPath: string;
+type MangaApiDetail = {
+  title: string;
+  slug: string;
+  apiStatus: string;
+  cover: string | null;
+  desc: string | null;
+  tags: string[];
+  chapters: MangaApiChapter[];
 };
 
-type ApiChapterEntry = ChapterSummary;
+type ChapterInfo = {
+  mid: string;
+  cid: string;
+  title: string;
+  line: number;
+  enc: string;
+  pre: string | null;
+  next: string | null;
+};
 
 function normalizeUrl(
   pathOrUrl: string,
-  base: string = DEFAULT_DOMAIN,
+  base: string = SITE,
 ): string {
   return new URL(pathOrUrl, base).toString();
 }
@@ -90,7 +96,7 @@ function readMapString(map: StringMap | null | undefined, key: string): string {
 async function fetchText(url: string, init: RequestInit = {}): Promise<string> {
   const headers = new Headers(init.headers);
   headers.set("user-agent", USER_AGENT);
-  headers.set("referer", "https://www.baozimh.com/");
+  headers.set("referer", `${SITE}/`);
   const res = await fetch(url, {
     ...init,
     redirect: "follow",
@@ -102,13 +108,17 @@ async function fetchText(url: string, init: RequestInit = {}): Promise<string> {
   return await res.text();
 }
 
+async function fetchJson(url: string): Promise<unknown> {
+  return JSON.parse(await fetchText(url));
+}
+
 async function fetchBytes(
   url: string,
   init: RequestInit = {},
 ): Promise<Uint8Array<ArrayBufferLike>> {
   const headers = new Headers(init.headers);
   headers.set("user-agent", USER_AGENT);
-  headers.set("referer", "https://www.baozimh.com/");
+  headers.set("referer", `${SITE}/`);
   const res = await fetch(url, {
     ...init,
     redirect: "follow",
@@ -120,66 +130,251 @@ async function fetchBytes(
   return new Uint8Array(await res.arrayBuffer());
 }
 
-function comicListUrl(
-  page = 1,
-  type = "all",
-  region = "all",
-  state = "all",
-  filter = "*",
-): string {
-  const u = new URL("/api/bzmhq/amp_comic_list", DEFAULT_DOMAIN);
-  u.searchParams.set("type", type);
-  u.searchParams.set("region", region);
-  u.searchParams.set("state", state);
-  u.searchParams.set("filter", filter);
-  u.searchParams.set("page", String(page));
-  u.searchParams.set("limit", "36");
-  u.searchParams.set("language", "tw");
-  u.searchParams.set("__amp_source_origin", DEFAULT_DOMAIN);
-  return u.toString();
-}
-
-function searchLink(query: string): string {
-  const u = new URL("/search", DEFAULT_DOMAIN);
+function searchLink(query: string, page = 1): string {
+  const u = new URL("/s", SITE);
   u.searchParams.set("q", query);
+  u.searchParams.set("page", String(page));
   return u.toString();
 }
 
-function detailLink(mangaPath: string): string {
-  return normalizeUrl(mangaPath);
+function detailLink(slug: string): string {
+  return normalizeUrl(`/manga/${slug}`);
 }
 
-function pageListLink(chapterPath: string): string {
-  return normalizeUrl(chapterPath);
+function mangaApiUrl(mid: string): string {
+  const u = new URL("/api/manga/get", API_HOST);
+  u.searchParams.set("mid", mid);
+  u.searchParams.set("mode", "all");
+  return u.toString();
 }
 
-function toQuickChapterPath(rawPath: string): string {
-  const url = new URL(rawPath, DEFAULT_DOMAIN);
-  const comicId = url.searchParams.get("comic_id");
-  const section = url.searchParams.get("section_slot");
-  const chapter = url.searchParams.get("chapter_slot");
-  if (!comicId || !section || !chapter) return rawPath;
-  return `/comic/chapter/${comicId}/${section}_${chapter}.html`;
+function chapterInfoUrl(mid: string, cid: string): string {
+  const u = new URL("/api/v2/chapter/getinfo", API_HOST);
+  u.searchParams.set("m", mid);
+  u.searchParams.set("c", cid);
+  return u.toString();
 }
 
-function parseSectionChapter(chapterPath: string): {
-  section: number;
-  chapter: number;
-} {
-  const m = chapterPath.match(/\/comic\/chapter\/[^/]+\/(\d+)_(\d+)\.html/);
-  if (!m) return { section: Number.NaN, chapter: Number.NaN };
+/** comicId 归一化为新站 manga slug；旧站 /comic/xxx 与新站 /manga/xxx 同形，可直接沿用。 */
+function normalizeComicId(comicId: string): string {
+  let s = readString(comicId);
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      s = new URL(s).pathname;
+    } catch {
+      // 保持原样走下面的清洗
+    }
+  }
+  s = s.replace(/^\/+/, "").split("?")[0].split("#")[0];
+  s = s.replace(/^(manga|comic)\//, "").replace(/\/+$/, "");
+  return s;
+}
+
+function parseSearchHtml(html: string): SearchHit[] {
+  const $ = BreezeHtml.load(html);
+  const rows: SearchHit[] = [];
+  $('a[href^="/manga/"]').each((_, el) => {
+    const href = readString($(el).attr("href"));
+    const m = href.match(/^\/manga\/([A-Za-z0-9_.\-]+)\/?$/);
+    if (!m) return;
+    const title =
+      readString($(el).find("h3.cardtitle").first().text()) ||
+      readString($(el).find("img").first().attr("alt"));
+    if (!title) return;
+    const cover = readString($(el).find("img").first().attr("src")) || null;
+    rows.push({ slug: m[1], title, cover });
+  });
+  const uniq = new Map<string, SearchHit>();
+  for (const row of rows) {
+    if (!uniq.has(row.slug)) uniq.set(row.slug, row);
+  }
+  return Array.from(uniq.values());
+}
+
+function parseSearchMaxPage(html: string): number {
+  const $ = BreezeHtml.load(html);
+  let max = 1;
+  $('a[href*="page="]').each((_, el) => {
+    const href = readString($(el).attr("href"));
+    const m = href.match(/[?&]page=(\d+)/);
+    if (m) max = Math.max(max, Number.parseInt(m[1], 10));
+  });
+  return max;
+}
+
+function getMetaContent($: CheerioAPI, selector: string): string {
+  return readString($(selector).first().attr("content"));
+}
+
+type LdComicSeries = {
+  "@type"?: string;
+  name?: string;
+  description?: string;
+  genre?: string[];
+  image?: string;
+};
+
+function readLdComicSeries($: CheerioAPI): LdComicSeries | null {
+  let found: LdComicSeries | null = null;
+  $('script[type="application/ld+json"]').each((_, el) => {
+    if (found) return;
+    try {
+      const obj = JSON.parse($(el).text()) as LdComicSeries;
+      if (obj && obj["@type"] === "ComicSeries") found = obj;
+    } catch {
+      return;
+    }
+  });
+  return found;
+}
+
+function mapStatusText(text: string): MangaStatus {
+  if (/連載|连载/.test(text)) return "ongoing";
+  if (/完結|完结/.test(text)) return "completed";
+  return "unknown";
+}
+
+function parseDetailHtml(html: string, slug: string): DetailMeta {
+  const $ = BreezeHtml.load(html);
+  const mid = readString($("[data-mid]").first().attr("data-mid"));
+  if (!mid) throw new Error(`未找到漫画 mid: ${slug}`);
+  const ld = readLdComicSeries($);
+  const badge = readString($("h1 span").first().text());
+  const h1Title = readString(
+    $("h1").first().text().replace(badge, "").replace(/章節下架/g, ""),
+  );
+  const title =
+    readString(ld?.name) ||
+    h1Title ||
+    getMetaContent($, 'meta[property="og:title"]');
+  const author =
+    readString($('a[href^="/manga-author/"]').first().text()) || null;
+  const tags: string[] = [];
+  $('a[href^="/manga-genre/"]').each((_, el) => {
+    const tag = readString($(el).text()).replace(/,/g, "").trim();
+    if (tag && !tags.includes(tag)) tags.push(tag);
+  });
+  for (const g of ld?.genre ?? []) {
+    const tag = readString(g);
+    if (tag && !tags.includes(tag)) tags.push(tag);
+  }
+  const description =
+    readString(ld?.description) ||
+    getMetaContent($, 'meta[property="og:description"]') ||
+    null;
+  const cover =
+    readString(ld?.image) || getMetaContent($, 'meta[property="og:image"]') || null;
+  // 章節下架等未知徽标落 unknown，不强行映射。
+  const statusBadge = badge || getMetaContent($, 'meta[property="og:updated_time"]');
+  const status = mapStatusText(statusBadge);
+  return { mid, slug, title, cover, author, tags, description, status, statusBadge };
+}
+
+function readApiChapters(data: unknown): MangaApiChapter[] {
+  const obj = data as { chapters?: unknown };
+  if (!Array.isArray(obj.chapters)) return [];
+  const out: MangaApiChapter[] = [];
+  for (const c of obj.chapters as Array<{
+    id?: unknown;
+    attributes?: {
+      title?: unknown;
+      slug?: unknown;
+      order?: unknown;
+      updatedAt?: unknown;
+    };
+  }>) {
+    const id = readString(c.id);
+    if (!id) continue;
+    out.push({
+      id,
+      title: readString(c.attributes?.title),
+      slug: readString(c.attributes?.slug),
+      order: Number(c.attributes?.order ?? 0) || 0,
+      updatedAt: readString(c.attributes?.updatedAt),
+    });
+  }
+  out.sort((a, b) => a.order - b.order);
+  return out;
+}
+
+async function fetchMangaApi(mid: string): Promise<MangaApiDetail> {
+  const json = (await fetchJson(mangaApiUrl(mid))) as {
+    code?: number;
+    data?: {
+      title?: unknown;
+      slug?: unknown;
+      status?: unknown;
+      cover?: unknown;
+      desc?: unknown;
+      tagsM?: { data?: Array<{ attributes?: { name?: unknown } }> };
+    };
+  };
+  if (json.code !== 200 || !json.data) {
+    throw new Error(`漫画 API 返回异常 mid=${mid}`);
+  }
+  const tags: string[] = [];
+  for (const t of json.data.tagsM?.data ?? []) {
+    const name = readString(t.attributes?.name);
+    if (name && !tags.includes(name)) tags.push(name);
+  }
   return {
-    section: Number.parseInt(m[1], 10),
-    chapter: Number.parseInt(m[2], 10),
+    title: readString(json.data.title),
+    slug: readString(json.data.slug),
+    apiStatus: readString(json.data.status),
+    cover: readString(json.data.cover) || null,
+    desc: readString(json.data.desc) || null,
+    tags,
+    chapters: readApiChapters(json.data),
   };
 }
 
-function makeActionItem(name: string): {
-  name: string;
-  onTap: StringMap;
-  extern: StringMap;
-} {
-  return { name, onTap: {}, extern: {} };
+async function fetchChapterInfo(mid: string, cid: string): Promise<ChapterInfo> {
+  const json = (await fetchJson(chapterInfoUrl(mid, cid))) as {
+    code?: number;
+    msg?: unknown;
+    data?: {
+      info?: {
+        mid?: unknown;
+        title?: unknown;
+        pre?: unknown;
+        next?: unknown;
+        images?: { images?: unknown; line?: unknown };
+      };
+    };
+  };
+  if (json.code !== 200 || !json.data?.info) {
+    throw new Error(
+      `章节 API 返回异常 mid=${mid} cid=${cid}: ${readString(json.msg) || json.code}`,
+    );
+  }
+  const info = json.data.info;
+  const enc = readString(info.images?.images);
+  if (!enc) throw new Error(`章节图片数据为空 mid=${mid} cid=${cid}`);
+  return {
+    mid: readString(info.mid) || mid,
+    cid,
+    title: readString(info.title),
+    line: Number(info.images?.line ?? 0) || 0,
+    enc,
+    pre: readString(info.pre) || null,
+    next: readString(info.next) || null,
+  };
+}
+
+function imageHost(line: number): string {
+  return line === 2 ? IMAGE_HOST_LINE2 : IMAGE_HOST_DEFAULT;
+}
+
+async function getPageUrls(mid: string, cid: string): Promise<string[]> {
+  const info = await fetchChapterInfo(mid, cid);
+  const host = imageHost(info.line);
+  const decoded = decodeChapterImages(info.enc);
+  decoded.sort((a, b) => a.order - b.order);
+  return decoded.map((item) => `${host}${item.url}`);
+}
+
+function makeActionItem(name: string, onTap: ComicInfoPageAction | null = null): ActionItem {
+  return { name, onTap, extern: {} };
 }
 
 function makeImage(
@@ -199,321 +394,13 @@ function makeImage(
   };
 }
 
-function parseSearchHtml(html: string): SearchHit[] {
-  const $ = BreezeHtml.load(html);
-  const rows: SearchHit[] = [];
-  $("a.comics-card__poster, div.classify-items a").each((_, el) => {
-    const href = readString($(el).attr("href"));
-    const title = readString(
-      $(el).attr("title") ?? $(el).find("img").attr("alt"),
-    );
-    const img = readString(
-      $(el).find("amp-img").attr("src") ?? $(el).find("img").attr("src"),
-    );
-    if (!href || !href.startsWith("/comic/")) return;
-    rows.push({
-      mangaPath: href,
-      title,
-      cover: img ? normalizeUrl(img) : null,
-    });
-  });
-  const uniq = new Map<string, SearchHit>();
-  for (const row of rows) {
-    if (!uniq.has(row.mangaPath)) uniq.set(row.mangaPath, row);
-  }
-  return Array.from(uniq.values());
-}
-
-function parseComicListJson(jsonText: string): SearchHit[] {
-  const obj = JSON.parse(jsonText) as ApiComicListResponse;
-  const items = Array.isArray(obj.items) ? obj.items : [];
-  return items.map(
-    (it): SearchHit => ({
-      mangaPath: `/comic/${readString(it.comic_id)}`,
-      title: readString(it.name),
-      cover: it.topic_img
-        ? `https://static-tw.baozimh.com/cover/${it.topic_img}`
-        : null,
-    }),
-  );
-}
-
-function getMetaContent($: CheerioAPI, selector: string): string {
-  return readString($(selector).first().attr("content"));
-}
-
-function getPageTitle($: CheerioAPI): string {
-  return (
-    readString($("h1.comics-detail__title").first().text()) ||
-    getMetaContent($, 'meta[property="og:novel:book_name"]') ||
-    readString($("title").first().text()).replace(/\s*-\s*包子漫畫\s*$/u, "")
-  );
-}
-
-function getPageAuthor($: CheerioAPI): string | null {
-  return (
-    readString($("h2.comics-detail__author").first().text()) ||
-    getMetaContent($, 'meta[property="og:novel:author"]') ||
-    null
-  );
-}
-
-function getPageTags($: CheerioAPI): string[] {
-  const tags: string[] = [];
-  $("div.tag-list span.tag").each((_, el) => {
-    const tag = readString($(el).text());
-    if (tag) tags.push(tag);
-  });
-  if (tags.length > 0) return tags;
-  const fallback = readMapString(
-    { categories: getMetaContent($, 'meta[property="og:novel:category"]') },
-    "categories",
-  );
-  return fallback
-    ? fallback
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean)
-    : [];
-}
-
-function getPageStatus($: CheerioAPI): MangaDetail["status"] {
-  const statusTag =
-    readString($("div.tag-list > span.tag").first().text()) ||
-    getMetaContent($, 'meta[property="og:novel:status"]');
-  if (["连载中", "連載中"].includes(statusTag)) return "ongoing";
-  if (["已完结", "已完結"].includes(statusTag)) return "completed";
-  return "unknown";
-}
-
-async function getMangaDetail(mangaPath: string): Promise<MangaDetail> {
-  const html = await fetchText(detailLink(mangaPath));
-  const $ = BreezeHtml.load(html);
-  const thumbnail =
-    readString($("div.pure-g div > amp-img").first().attr("src")) ||
-    getMetaContent($, 'meta[property="og:image"]');
-  const title = getPageTitle($);
-  const author = getPageAuthor($);
-  const tags = getPageTags($);
-  const description =
-    readString($("p.comics-detail__desc").first().text()) ||
-    getMetaContent($, 'meta[property="og:description"]') ||
-    null;
-  return {
-    mangaPath,
-    title,
-    thumbnail: thumbnail ? normalizeUrl(thumbnail) : null,
-    author,
-    tags,
-    description,
-    status: getPageStatus($),
-  };
-}
-
-async function getChapterList(mangaPath: string): Promise<ChapterSummary[]> {
-  const html = await fetchText(detailLink(mangaPath));
-  const $ = BreezeHtml.load(html);
-  const list: ChapterListEntry[] = [];
-  $(".comics-chapters a[href]").each((_, el) => {
-    const name = readString($(el).text());
-    const href = readString($(el).attr("href"));
-    if (!href) return;
-    list.push({ name, chapterPath: toQuickChapterPath(href) });
-  });
-  const dedup: ChapterListEntry[] = [];
-  const seen = new Set<string>();
-  for (const row of list) {
-    const key = `${row.name}@@${row.chapterPath}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      dedup.push(row);
-    }
-  }
-  dedup.sort((a, b) => {
-    const aa = parseSectionChapter(a.chapterPath);
-    const bb = parseSectionChapter(b.chapterPath);
-    if (
-      Number.isNaN(aa.section) ||
-      Number.isNaN(aa.chapter) ||
-      Number.isNaN(bb.section) ||
-      Number.isNaN(bb.chapter)
-    ) {
-      return b.chapterPath.localeCompare(a.chapterPath);
-    }
-    if (aa.section !== bb.section) return bb.section - aa.section;
-    return bb.chapter - aa.chapter;
-  });
-  const total = dedup.length;
-  const chapters: ChapterSummary[] = dedup.map((item, index) => ({
-    id: item.chapterPath,
-    requestId: item.chapterPath,
-    logicalKey: String(total - index),
-    storageChapterId: item.chapterPath,
-    name: item.name,
-    order: total - index,
-    extern: {},
-  }));
-
-  if (chapters.length > 0) {
-    chapters[0].storageChapterId += LAST_CHAPTER_MARK;
-    chapters[0].requestId += LAST_CHAPTER_MARK;
-    chapters[0].logicalKey += LAST_CHAPTER_MARK;
-  }
-  return chapters.reverse();
-}
-
-function randomBypassHost(): string {
-  return BYPASS_HOSTS[Math.floor(Math.random() * BYPASS_HOSTS.length)];
-}
-
-function buildChapterRequestUrl(
-  chapterPath: string,
-  forcedBypassHost: string | null = null,
-): ChapterRequest {
-  const isLast = chapterPath.endsWith(LAST_CHAPTER_MARK);
-  if (!isLast) {
-    return {
-      url: pageListLink(chapterPath),
-      headers: { referer: "https://www.baozimh.com/" },
-      isLast,
-    };
-  }
-  const raw = chapterPath.slice(0, -LAST_CHAPTER_MARK.length);
-  const u = new URL(pageListLink(raw));
-  u.host = forcedBypassHost || randomBypassHost();
-  u.pathname = `/baozimhapp${u.pathname}`;
-  return {
-    url: u.toString(),
-    headers: {
-      referer: "https://app.baozimh.com/",
-      "accept-encoding": "gzip",
-      "app-id": APP_ID,
-      "app-version": APP_VERSION,
-      connection: "Keep-Alive",
-      "device-code": DEVICE_CODE,
-      "device-id": DEVICE_ID,
-      "user-agent": USER_AGENT,
-    },
-    isLast,
-  };
-}
-
-function isCertExpiredError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const cause = Reflect.get(err, "cause") as { code?: unknown } | undefined;
-  return String(cause?.code ?? "").includes("CERT_HAS_EXPIRED");
-}
-
-function parsePageImageUrls(
-  html: string,
-  isLast: boolean,
-): { urls: string[]; nextHref: string | null } {
-  const $ = BreezeHtml.load(html);
-  const urls: string[] = [];
-  if (!isLast) {
-    $('amp-state[id^=chapter][id$=Src] > script[type="application/json"]').each(
-      (_, el) => {
-        const data = readString($(el).text());
-        if (!data) return;
-        try {
-          const obj = JSON.parse(data) as { url?: unknown };
-          if (obj.url) urls.push(String(obj.url));
-        } catch {
-          return;
-        }
-      },
-    );
-  } else {
-    $("div.chapter-img img.comic-contain__item[data-src]").each((_, el) => {
-      const src = readString($(el).attr("data-src"));
-      if (src) urls.push(src);
-    });
-  }
-  const nextHref =
-    $("div.next_chapter a")
-      .filter((_, el) => {
-        const txt = readString($(el).text());
-        return txt.includes("點擊進入下一頁") || txt.includes("点击进入下一页");
-      })
-      .first()
-      .attr("href") || null;
-  return { urls, nextHref };
-}
-
-async function getPages(chapterPath: string): Promise<string[]> {
-  const pages: string[] = [];
-  let currentPath = chapterPath;
-  const isLastRoot = currentPath.endsWith(LAST_CHAPTER_MARK);
-  while (true) {
-    let html: string | undefined;
-    let req: ChapterRequest | null = null;
-    if (!currentPath.endsWith(LAST_CHAPTER_MARK)) {
-      req = buildChapterRequestUrl(currentPath);
-      html = await fetchText(req.url, { headers: req.headers });
-    } else {
-      const hosts = [...BYPASS_HOSTS];
-      let lastErr: unknown;
-      for (const host of hosts) {
-        try {
-          req = buildChapterRequestUrl(currentPath, host);
-          html = await fetchText(req.url, { headers: req.headers });
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (!isCertExpiredError(err)) {
-            throw err;
-          }
-        }
-      }
-      if (!html) {
-        throw (
-          lastErr ||
-          new Error("Failed to fetch last-chapter page from all bypass hosts")
-        );
-      }
-    }
-    if (!req) {
-      throw new Error("chapter request not built");
-    }
-    const parsed = parsePageImageUrls(html, req.isLast);
-    for (const u of parsed.urls) pages.push(u);
-    if (!parsed.nextHref) break;
-    currentPath = parsed.nextHref + (isLastRoot ? LAST_CHAPTER_MARK : "");
-  }
-  return pages;
-}
-
 function createComicListItem(
   id: string,
   title: string,
   cover: string | null,
   subtitle = "",
   raw: StringMap = {},
-): {
-  source: string;
-  id: string;
-  title: string;
-  subtitle: string;
-  finished: boolean;
-  likesCount: number;
-  viewsCount: number;
-  updatedAt: string;
-  cover: {
-    id: string;
-    url: string;
-    name: string;
-    path: string;
-    extern: StringMap;
-  };
-  metadata: {
-    type: string;
-    name: string;
-    value: { name: string; onTap: StringMap; extern: StringMap }[];
-  }[];
-  raw: StringMap;
-  extern: StringMap;
-} {
+): ComicListItem {
   const coverUrl = cover ?? "";
   return {
     source: PLUGIN_ID,
@@ -537,15 +424,44 @@ function createComicListItem(
   };
 }
 
-function chaptersToData(chapters: ChapterSummary[]): ChapterSummary[] {
-  return chapters.map((item) => ({
-    id: item.id,
-    requestId: item.requestId,
-    logicalKey: item.logicalKey,
-    storageChapterId: item.storageChapterId,
-    name: item.name,
-    order: item.order,
-    extern: item.extern,
+function toChapterSummaries(
+  mid: string,
+  mangaSlug: string,
+  list: MangaApiChapter[],
+): ChapterSummary[] {
+  return list.map((c) => ({
+    id: c.id,
+    requestId: c.id,
+    logicalKey: String(c.order),
+    storageChapterId: c.id,
+    name: c.title || `第 ${c.order} 话`,
+    order: c.order,
+    extern: { mid, mangaSlug, slug: c.slug },
+  }));
+}
+
+function findChapter(
+  chapters: ChapterSummary[],
+  chapterId: string,
+): ChapterSummary {
+  return (
+    chapters.find(
+      (item) =>
+        item.requestId === chapterId ||
+        item.id === chapterId ||
+        readString(item.extern?.["slug"]) === chapterId ||
+        item.logicalKey === chapterId,
+    ) ?? chapters[0]
+  );
+}
+
+function toPageItems(urls: string[]): ChapterPage[] {
+  return urls.map((url, idx) => ({
+    id: `${idx + 1}`,
+    name: `${idx + 1}`,
+    path: url.split("/").at(-1) || `${idx + 1}`,
+    url,
+    extern: {},
   }));
 }
 
@@ -556,17 +472,21 @@ export async function searchComic(
     payload.keyword ?? readMapString(payload.extern, "keyword"),
   );
   const page = Math.max(1, Number(payload.page ?? 1) || 1);
-  const html = await fetchText(searchLink(keyword));
+  const html = await fetchText(searchLink(keyword, page));
   const items = parseSearchHtml(html).map((row) =>
     createComicListItem(
-      row.mangaPath.replace(/^\/comic\//, ""),
-      row.title || row.mangaPath,
+      row.slug,
+      row.title || row.slug,
       row.cover,
       "",
       row as unknown as StringMap,
     ),
   );
-  const paging = { page, pages: 1, total: items.length, hasReachedMax: true };
+  const pages = Math.max(page, parseSearchMaxPage(html));
+  const pageSize = items.length || SEARCH_PAGE_SIZE;
+  const total =
+    page >= pages ? (pages - 1) * pageSize + items.length : pages * pageSize;
+  const paging = { page, pages, total, hasReachedMax: page >= pages };
   return {
     source: PLUGIN_ID,
     extern: payload.extern ?? null,
@@ -585,68 +505,68 @@ export async function searchComic(
 export async function getComicDetail(
   payload: ChapterPayload & { comicId?: string } = {},
 ): Promise<ComicDetailContract> {
-  const comicId = readString(payload.comicId);
+  const comicId = normalizeComicId(readString(payload.comicId));
   if (!comicId) throw new Error("comicId 不能为空");
-  const mangaPath = comicId.startsWith("/comic/")
-    ? comicId
-    : comicId.startsWith("/")
-      ? comicId
-      : `/comic/${comicId}`;
-  const normalizedComicId = mangaPath.replace(/^\/comic\//, "");
-  const detail = await getMangaDetail(mangaPath);
-  const chapters = await getChapterList(mangaPath);
+  const meta = parseDetailHtml(await fetchText(detailLink(comicId)), comicId);
+  const api = await fetchMangaApi(meta.mid);
+  const tags = [...meta.tags];
+  for (const t of api.tags) {
+    if (!tags.includes(t)) tags.push(t);
+  }
+  const title = meta.title || api.title || comicId;
+  const thumbnail = api.cover || meta.cover;
+  // 详情徽标优先（保留原文如章節下架，不强行映射）；徽标未知时回落 API status。
+  const status =
+    meta.status !== "unknown"
+      ? meta.status
+      : api.apiStatus === "0"
+        ? ("ongoing" as const)
+        : api.apiStatus === "1"
+          ? ("completed" as const)
+          : ("unknown" as const);
+  const statusLabel =
+    meta.status !== "unknown"
+      ? meta.status === "completed"
+        ? "已完結"
+        : "連載中"
+      : meta.statusBadge || "未知";
+  const chapters = toChapterSummaries(meta.mid, meta.slug, api.chapters);
   return {
     source: PLUGIN_ID,
-    comicId: normalizedComicId,
+    comicId,
     extern: payload.extern ?? null,
     scheme: { version: "1.0.0", type: "comicDetail", source: PLUGIN_ID },
     data: {
       normal: {
         comicInfo: {
-          id: normalizedComicId,
-          title: detail.title,
+          id: comicId,
+          title,
           titleMeta: [
-            makeActionItem(
-              detail.status === "completed"
-                ? "已完結"
-                : detail.status === "ongoing"
-                  ? "連載中"
-                  : "未知",
-            ),
+            makeActionItem(statusLabel),
             makeActionItem(`${chapters.length} 章`),
           ],
           creator: {
-            id: normalizedComicId,
-            name: detail.author || "",
-            avatar: makeImage(
-              normalizedComicId,
-              detail.thumbnail || "",
-              "cover",
-              detail.thumbnail || "",
-            ),
-            onTap: {},
+            id: comicId,
+            name: meta.author || "",
+            avatar: makeImage(comicId, thumbnail || "", "cover", thumbnail || ""),
+            onTap: null,
             extern: {},
           },
-          description: detail.description || "",
-          cover: makeImage(
-            normalizedComicId,
-            detail.thumbnail || "",
-            "cover",
-            detail.thumbnail || "",
-          ),
+          description: meta.description || api.desc || "",
+          cover: makeImage(comicId, thumbnail || "", "cover", thumbnail || ""),
           metadata: [
             {
               type: "author",
               name: "作者",
-              value: detail.author ? [makeActionItem(detail.author)] : [],
+              value: meta.author ? [makeActionItem(meta.author)] : [],
             },
             {
               type: "tags",
               name: "标签",
-              value: detail.tags.map((tag) => makeActionItem(tag)),
+              value: tags.map((tag) => makeActionItem(tag)),
             },
           ],
-          extern: { status: detail.status },
+          extern: { status, mid: meta.mid },
         },
         eps: chapters,
         recommend: [],
@@ -661,7 +581,7 @@ export async function getComicDetail(
         allowDownload: true,
         extern: {},
       },
-      raw: { detail, chapters },
+      raw: { meta, apiStatus: api.apiStatus, chapterCount: chapters.length },
     },
   };
 }
@@ -669,23 +589,16 @@ export async function getComicDetail(
 export async function getChapter(
   payload: ChapterPayload = {},
 ): Promise<ChapterContentContract> {
-  const comicId = readString(payload.comicId);
+  const comicId = normalizeComicId(readString(payload.comicId));
   if (!comicId) throw new Error("comicId 不能为空");
   const detail = await getComicDetail({ comicId, extern: payload.extern });
   const chapters = detail.data.normal.eps;
+  if (chapters.length === 0) throw new Error(`暂无章节: ${comicId}`);
   const chapterId = readString(payload.chapterId);
-  const chapter =
-    chapters.find(
-      (item) => item.requestId === chapterId || item.id === chapterId,
-    ) ?? chapters[0];
-  const pages = await getPages(chapter.requestId);
-  const pageItems: ChapterPage[] = pages.map((url, idx) => ({
-    id: `${idx + 1}`,
-    name: `${idx + 1}`,
-    path: url.split("/").at(-1) || `${idx + 1}`,
-    url,
-    extern: {},
-  }));
+  const chapter = chapterId ? findChapter(chapters, chapterId) : chapters[0];
+  const mid = readString(chapter.extern?.["mid"]);
+  const pages = await getPageUrls(mid, chapter.requestId);
+  const pageItems = toPageItems(pages);
   return {
     source: PLUGIN_ID,
     comicId,
@@ -711,23 +624,18 @@ export async function getChapter(
 export async function getReadSnapshot(
   payload: ReadSnapshotPayload = {},
 ): Promise<ReadSnapshotContract> {
-  const comicId = readString(payload.comicId);
+  const comicId = normalizeComicId(readString(payload.comicId));
   if (!comicId) throw new Error("comicId 不能为空");
   const detail = await getComicDetail({ comicId, extern: payload.extern });
   const chapters = detail.data.normal.eps;
+  if (chapters.length === 0) throw new Error(`暂无章节: ${comicId}`);
   const chapterId = readString(payload.chapterId);
-  const currentChapter =
-    chapters.find(
-      (item) => item.requestId === chapterId || item.id === chapterId,
-    ) ?? chapters[0];
-  const pages = await getPages(currentChapter.requestId);
-  const pageItems: ChapterPage[] = pages.map((url, idx) => ({
-    id: `${idx + 1}`,
-    name: `${idx + 1}`,
-    path: url.split("/").at(-1) || `${idx + 1}`,
-    url,
-    extern: {},
-  }));
+  const currentChapter = chapterId
+    ? findChapter(chapters, chapterId)
+    : chapters[0];
+  const mid = readString(currentChapter.extern?.["mid"]);
+  const pages = await getPageUrls(mid, currentChapter.requestId);
+  const pageItems = toPageItems(pages);
   return {
     source: PLUGIN_ID,
     extern: payload.extern ?? null,

@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       breeze-plugin-kit:
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.12.0
+        version: 0.12.0
     devDependencies:
       '@rspack/cli':
         specifier: ^2.0.8
@@ -291,8 +291,8 @@ packages:
   '@types/node@26.0.0':
     resolution: {integrity: sha512-vf2YFi1iY9lHGwNJMs01biZFbKJkrZR1T6/MlzjhJLPdntOHLhTrDSnSVcdtvjihi4VQNlrFRIxLsDBlQpAipA==}
 
-  breeze-plugin-kit@0.3.0:
-    resolution: {integrity: sha512-+UysHB6tpi2FO8/95p41jm4RFgRYCN4CqAJdV1XtNcteFyYmgNUiEQD09yWwUIjawku9PUAJ0QCdhIkmaeff2g==}
+  breeze-plugin-kit@0.12.0:
+    resolution: {integrity: sha512-qSFLxncsZeu83omDgw3w4/L28NX1LZ5sukxXFYoMrBlij7kkqJ3u7jYuGiptDCplnkWJ0K7ailRh/zTjL1fJjg==}
 
   cross-env@10.1.0:
     resolution: {integrity: sha512-GsYosgnACZTADcmEyJctkJIoqAhHjttw7RsFrVoJNXbsWWqaq6Ym+7kZjq6mS45O0jij6vtiReppKQEtqWy6Dw==}
@@ -518,7 +518,7 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
-  breeze-plugin-kit@0.3.0: {}
+  breeze-plugin-kit@0.12.0: {}
 
   cross-env@10.1.0:
     dependencies:
