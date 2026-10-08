@@ -78,10 +78,7 @@ type ChapterInfo = {
   next: string | null;
 };
 
-function normalizeUrl(
-  pathOrUrl: string,
-  base: string = SITE,
-): string {
+function normalizeUrl(pathOrUrl: string, base: string = SITE): string {
   return new URL(pathOrUrl, base).toString();
 }
 
@@ -175,7 +172,7 @@ function parseSearchHtml(html: string): SearchHit[] {
   const rows: SearchHit[] = [];
   $('a[href^="/manga/"]').each((_, el) => {
     const href = readString($(el).attr("href"));
-    const m = href.match(/^\/manga\/([A-Za-z0-9_.\-]+)\/?$/);
+    const m = href.match(/^\/manga\/([A-Za-z0-9_.-]+)\/?$/);
     if (!m) return;
     const title =
       readString($(el).find("h3.cardtitle").first().text()) ||
@@ -241,14 +238,14 @@ function parseDetailHtml(html: string, slug: string): DetailMeta {
   const ld = readLdComicSeries($);
   const badge = readString($("h1 span").first().text());
   const h1Title = readString(
-    $("h1").first().text().replace(badge, "").replace(/章節下架/g, ""),
+    $("h1")
+      .first()
+      .text()
+      .replace(badge, "")
+      .replace(/章節下架/g, ""),
   );
-  const title =
-    readString(ld?.name) ||
-    h1Title ||
-    getMetaContent($, 'meta[property="og:title"]');
-  const author =
-    readString($('a[href^="/manga-author/"]').first().text()) || null;
+  const title = readString(ld?.name) || h1Title || getMetaContent($, 'meta[property="og:title"]');
+  const author = readString($('a[href^="/manga-author/"]').first().text()) || null;
   const tags: string[] = [];
   $('a[href^="/manga-genre/"]').each((_, el) => {
     const tag = readString($(el).text()).replace(/,/g, "").trim();
@@ -259,15 +256,22 @@ function parseDetailHtml(html: string, slug: string): DetailMeta {
     if (tag && !tags.includes(tag)) tags.push(tag);
   }
   const description =
-    readString(ld?.description) ||
-    getMetaContent($, 'meta[property="og:description"]') ||
-    null;
-  const cover =
-    readString(ld?.image) || getMetaContent($, 'meta[property="og:image"]') || null;
+    readString(ld?.description) || getMetaContent($, 'meta[property="og:description"]') || null;
+  const cover = readString(ld?.image) || getMetaContent($, 'meta[property="og:image"]') || null;
   // 章節下架等未知徽标落 unknown，不强行映射。
   const statusBadge = badge || getMetaContent($, 'meta[property="og:updated_time"]');
   const status = mapStatusText(statusBadge);
-  return { mid, slug, title, cover, author, tags, description, status, statusBadge };
+  return {
+    mid,
+    slug,
+    title,
+    cover,
+    author,
+    tags,
+    description,
+    status,
+    statusBadge,
+  };
 }
 
 function readApiChapters(data: unknown): MangaApiChapter[] {
@@ -440,10 +444,7 @@ function toChapterSummaries(
   }));
 }
 
-function findChapter(
-  chapters: ChapterSummary[],
-  chapterId: string,
-): ChapterSummary {
+function findChapter(chapters: ChapterSummary[], chapterId: string): ChapterSummary {
   return (
     chapters.find(
       (item) =>
@@ -465,12 +466,8 @@ function toPageItems(urls: string[]): ChapterPage[] {
   }));
 }
 
-export async function searchComic(
-  payload: SearchComicPayload = {},
-): Promise<SearchResultContract> {
-  const keyword = readString(
-    payload.keyword ?? readMapString(payload.extern, "keyword"),
-  );
+export async function searchComic(payload: SearchComicPayload = {}): Promise<SearchResultContract> {
+  const keyword = readString(payload.keyword ?? readMapString(payload.extern, "keyword"));
   const page = Math.max(1, Number(payload.page ?? 1) || 1);
   const html = await fetchText(searchLink(keyword, page));
   const items = parseSearchHtml(html).map((row) =>
@@ -484,8 +481,7 @@ export async function searchComic(
   );
   const pages = Math.max(page, parseSearchMaxPage(html));
   const pageSize = items.length || SEARCH_PAGE_SIZE;
-  const total =
-    page >= pages ? (pages - 1) * pageSize + items.length : pages * pageSize;
+  const total = page >= pages ? (pages - 1) * pageSize + items.length : pages * pageSize;
   const paging = { page, pages, total, hasReachedMax: page >= pages };
   return {
     source: PLUGIN_ID,
@@ -541,14 +537,11 @@ export async function getComicDetail(
         comicInfo: {
           id: comicId,
           title,
-          titleMeta: [
-            makeActionItem(statusLabel),
-            makeActionItem(`${chapters.length} 章`),
-          ],
+          titleMeta: [makeActionItem(statusLabel), makeActionItem(`${chapters.length} 章`)],
           creator: {
-            id: comicId,
-            name: meta.author || "",
-            avatar: makeImage(comicId, thumbnail || "", "cover", thumbnail || ""),
+            id: "",
+            name: "",
+            avatar: makeImage("", "", "", ""),
             onTap: null,
             extern: {},
           },
@@ -576,8 +569,11 @@ export async function getComicDetail(
         isFavourite: false,
         isLiked: false,
         allowComments: false,
+        allowCommentsReason: "包子漫画暂不支持评论",
         allowLike: false,
+        allowLikeReason: "包子漫画暂不支持点赞",
         allowCollected: false,
+        allowCollectedReason: "包子漫画暂不支持收藏",
         allowDownload: true,
         extern: {},
       },
@@ -586,9 +582,7 @@ export async function getComicDetail(
   };
 }
 
-export async function getChapter(
-  payload: ChapterPayload = {},
-): Promise<ChapterContentContract> {
+export async function getChapter(payload: ChapterPayload = {}): Promise<ChapterContentContract> {
   const comicId = normalizeComicId(readString(payload.comicId));
   if (!comicId) throw new Error("comicId 不能为空");
   const detail = await getComicDetail({ comicId, extern: payload.extern });
@@ -630,9 +624,7 @@ export async function getReadSnapshot(
   const chapters = detail.data.normal.eps;
   if (chapters.length === 0) throw new Error(`暂无章节: ${comicId}`);
   const chapterId = readString(payload.chapterId);
-  const currentChapter = chapterId
-    ? findChapter(chapters, chapterId)
-    : chapters[0];
+  const currentChapter = chapterId ? findChapter(chapters, chapterId) : chapters[0];
   const mid = readString(currentChapter.extern?.["mid"]);
   const pages = await getPageUrls(mid, currentChapter.requestId);
   const pageItems = toPageItems(pages);

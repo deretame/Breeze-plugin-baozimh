@@ -6,15 +6,10 @@ export function buildPluginInfo(): InfoContract {
     name: "包子漫画",
     uuid: PLUGIN_ID,
     iconUrl: "https://baozimh.org/favicon.ico",
-    creator: {
-      name: "",
-      describe: "",
-    },
-    describe: "包子漫画抓取插件",
-    version: "0.0.3",
+    describe: "包子漫画插件",
+    version: "0.0.4",
     home: "https://github.com/deretame/Breeze-plugin-baozimh",
-    updateUrl:
-      "https://api.github.com/repos/deretame/Breeze-plugin-baozimh/releases/latest",
+    updateUrl: "https://api.github.com/repos/deretame/Breeze-plugin-baozimh/releases/latest",
     npmName: "breeze-plugin-baozimh",
     function: [],
   };
