@@ -7,8 +7,11 @@ import type {
   ComicDetailContract,
   ComicInfoPageAction,
   ComicListItem,
+  ComicListScene,
+  ComicPagedListContract,
   FetchImageBytesPayload,
   FetchImageBytesResult,
+  PluginHomePagesBundleContract,
   ReadSnapshotContract,
   ReadSnapshotPayload,
   SearchComicPayload,
@@ -658,4 +661,46 @@ export async function fetchImageBytes(
   const targetUrl = readString(payload.url);
   if (!targetUrl) throw new Error("url 不能为空");
   return await fetchBytes(targetUrl);
+}
+
+function buildLatestScene(): ComicListScene {
+  return {
+    title: "包子漫画最新",
+    source: PLUGIN_ID,
+    body: {
+      type: "pluginPagedComicList" as const,
+      request: {
+        fnPath: "getHomeListData",
+        core: {},
+        extern: { source: "latest" },
+      },
+    },
+  };
+}
+
+export async function getHomeListData(
+  payload: SearchComicPayload = {},
+): Promise<ComicPagedListContract> {
+  const page = Math.max(1, Number(payload.page ?? 1) || 1);
+  const result = await searchComic({ ...payload, keyword: "", page });
+  return {
+    source: PLUGIN_ID,
+    extern: payload.extern ?? null,
+    scheme: {
+      version: "1.0.0",
+      type: "comicPagedList",
+      source: PLUGIN_ID,
+    },
+    data: { items: result.items, hasReachedMax: result.paging.hasReachedMax },
+  };
+}
+
+export async function getPluginHomePagesBundle(): Promise<PluginHomePagesBundleContract> {
+  return {
+    source: PLUGIN_ID,
+    scheme: { version: "1.0.0", type: "homePagesBundle" },
+    data: {
+      tabs: [{ id: "latest", title: "最新", scene: buildLatestScene() }],
+    },
+  };
 }

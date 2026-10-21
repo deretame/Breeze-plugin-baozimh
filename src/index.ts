@@ -2,6 +2,8 @@ import {
   fetchImageBytes,
   getChapter,
   getComicDetail,
+  getHomeListData,
+  getPluginHomePagesBundle,
   getReadSnapshot,
   searchComic,
 } from "./baozimh-core";
@@ -42,6 +44,8 @@ export default {
   getChapter,
   getReadSnapshot,
   fetchImageBytes,
+  getHomeListData,
+  getPluginHomePagesBundle,
   getSettingsBundle,
   getCapabilitiesBundle,
 };
