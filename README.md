@@ -4,7 +4,7 @@ Breeze 插件示例工程，包含所有 API 类型的占位实现。新插件�
 
 ## 文档
 
-插件开发文档：[https://deretame.github.io/plugin-dev-docs/](https://deretame.github.io/plugin-dev-docs/)
+插件开发文档：[https://breeze-project-org.github.io/plugin-dev-docs/](https://breeze-project-org.github.io/plugin-dev-docs/)
 
 ## 已导出的 fnPath
 
